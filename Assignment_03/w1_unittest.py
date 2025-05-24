@@ -1,8 +1,10 @@
+import re
 import jax
 import trax
+import pickle
+import inspect
 import numpy as old_np
 from trax import fastmath
-import jax.numpy as jnp
 
 random = fastmath.random
 
@@ -99,7 +101,7 @@ def test_tweet_to_tensor(target, Vocab):
             failed_cases.append(
                 {
                     "name": "simple_test_check",
-                    "expected": test_case["expected"]["output_type"],
+                    "expected": test_case["expected"]["output_list"],
                     "got": result,
                 }
             )
@@ -227,13 +229,13 @@ def test_data_generator(target):
         )
 
     try:
-        assert isinstance(result[0], jnp.ndarray)
+        assert isinstance(result[0], jax.interpreters.xla.DeviceArray)
         successful_cases += 1
     except:
         failed_cases.append(
             {
                 "name": "check_type_subarray0",
-                "expected": jnp.ndarray,
+                "expected": jax.interpreters.xla.DeviceArray,
                 "got": type(result[0]),
             }
         )
@@ -242,13 +244,13 @@ def test_data_generator(target):
         )
 
     try:
-        assert isinstance(result[1], jnp.ndarray)
+        assert isinstance(result[1], jax.interpreters.xla.DeviceArray)
         successful_cases += 1
     except:
         failed_cases.append(
             {
                 "name": "check_type_subarray1",
-                "expected": jnp.ndarray,
+                "expected": jax.interpreters.xla.DeviceArray,
                 "got": type(result[1]),
             }
         )
@@ -257,13 +259,13 @@ def test_data_generator(target):
         )
 
     try:
-        assert isinstance(result[2], jnp.ndarray)
+        assert isinstance(result[2], jax.interpreters.xla.DeviceArray)
         successful_cases += 1
     except:
         failed_cases.append(
             {
                 "name": "check_type_subarray2",
-                "expected": jnp.ndarray,
+                "expected": jax.interpreters.xla.DeviceArray,
                 "got": type(result[2]),
             }
         )
@@ -508,7 +510,7 @@ def test_Dense(target):
                     ]
                 ),
                 "output_shape": (1, 10),
-                "output_type": jnp.ndarray,
+                "output_type": jax.interpreters.xla.DeviceArray,
                 "weights_shape": (3, 10),
                 "weights": jax.numpy.array(
                     [
@@ -560,7 +562,7 @@ def test_Dense(target):
                     [[-1.4564116, -0.7315445, 0.14365998, 1.665177, 1.2354646]]
                 ),
                 "output_shape": (1, 5),
-                "output_type": jnp.ndarray,
+                "output_type": jax.interpreters.xla.DeviceArray,
                 "weights_shape": (4, 5),
                 "weights": jax.numpy.array(
                     [
@@ -1461,3 +1463,233 @@ def unittest_test_model(target, generator, model):
         print("\033[91m", len(failed_cases), " Tests failed")
 
     # return failed_cases, len(failed_cases) + successful_cases
+
+
+def test_build_vocabulary(target):
+    print("Running test_build_vocabulary...\n")
+    
+    # Sample processed tweets (already stemmed, tokenized)
+    sample_corpus = [
+        ["followfriday", "top", "engag"],
+        ["top", "engag", "member"],
+        ["commun", "week", ":)", "hey", "jame"]
+    ]
+
+    vocab = target(sample_corpus)
+
+    try:
+        # Type check
+        assert isinstance(vocab, dict), "Vocab must be a dictionary."
+
+        # # Required tokens
+        # assert '' in vocab and vocab[''] == 0, "Padding token '' is missing or incorrect."
+        # assert '[UNK]' in vocab and vocab['[UNK]'] == 1, "Unknown token '[UNK]' is missing or incorrect."
+
+        # Word check
+        expected_words = ['followfriday', 'top', 'engag', 'member', 'commun', 'week', ':)', 'hey', 'jame']
+        for word in expected_words:
+            assert word in vocab, f"Missing word in vocab: {word}"
+
+        # Index check
+        indices = list(vocab.values())
+        assert all(isinstance(i, int) for i in indices), "All values must be integers."
+        assert len(set(indices)) == len(indices), "Indices are not unique."
+        assert min(indices) == 0, "Minimum index should be 0."
+
+        # Optional: vocab size check
+        expected_vocab_size = 11  # '' + '[UNK]' + 9 unique words
+        assert len(vocab) == expected_vocab_size, f"Expected vocab size {expected_vocab_size}, got {len(vocab)}."
+
+        print("\033[92m✅ test_build_vocabulary: All tests passed.\n")
+    except AssertionError as e:
+        print("\033[91m❌ test_build_vocabulary: Test failed.")
+        print("→ Reason:", e)
+        print("→ Partial Vocab:", {k: vocab[k] for k in list(vocab)[:10]})
+
+
+def test_max_length(target):
+    print("Running test_max_length...\n")
+    
+    # Test case 1
+    train_x = [["i", "love", "nlp"], ["hello", "world"]]
+    val_x = [["this", "is", "great"], ["deep", "learning", "is", "fun"]]
+
+    try:
+        result = target(train_x, val_x)
+
+        assert isinstance(result, int), "Output must be an integer."
+        assert result == 4, f"Expected 4, but got {result}."
+        print("\033[92m✅ test_max_length: All tests passed.\n")
+
+    except AssertionError as e:
+        print("\033[91m❌ test_max_length: Test failed.")
+        print("→ Reason:", e)
+        print("→ train_x:", train_x)
+        print("→ val_x:", val_x)
+
+
+def test_padded_sequence(target):
+    print("Running test_padded_sequence...\n")
+
+    vocab = {
+        "": 0,
+        "[UNK]": 1,
+        "i": 2,
+        "love": 3,
+        "nlp": 4
+    }
+    max_len = 5
+
+    # Test case: with known and unknown tokens
+    tweet = ["i", "love", "ai"]
+    expected = [2, 3, 1, 0, 0]  # 'ai' → [UNK], then pad with 0s
+
+    try:
+        result = target(tweet, vocab, max_len)
+
+        assert isinstance(result, list), "Output must be a list."
+        assert result == expected, f"Expected {expected}, got {result}."
+        assert len(result) == max_len, f"Expected length {max_len}, got {len(result)}."
+
+        print("\033[92m✅ test_padded_sequence: All tests passed.\n")
+
+    except AssertionError as e:
+        print("\033[91m❌ test_padded_sequence: Test failed.")
+        print("→ Reason:", e)
+        print("→ Tweet:", tweet)
+        print("→ Vocab:", vocab)
+
+
+def test_relu(target):
+    print("Running test_relu...\n")
+
+    import numpy as np
+
+    # Test case
+    x = np.array([[-2.0, -1.0, 0.0], [0.0, 1.0, 2.0]])
+    expected = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 2.0]])
+
+    try:
+        result = target(x)
+
+        # Kiểm tra định dạng và giá trị
+        assert isinstance(result, np.ndarray), "Output must be a numpy array."
+        assert result.shape == x.shape, f"Output shape mismatch. Expected {x.shape}, got {result.shape}."
+        assert np.allclose(result, expected), f"Output mismatch. Expected:\n{expected}\nGot:\n{result}"
+
+        print("\033[92m✅ test_relu: All tests passed.\n")
+
+    except AssertionError as e:
+        print("\033[91m❌ test_relu: Test failed.")
+        print("→ Reason:", e)
+        print("→ Input:", x)
+
+
+def test_sigmoid(target):
+    print("Running test_sigmoid...\n")
+
+    import numpy as np
+
+    x = np.array([[-1000.0, -1.0, 0.0], [0.0, 1.0, 1000.0]])
+    # Expected (manually computed for reference values)
+    expected = np.array([
+        [0.0, 1/(1+np.exp(1)), 0.5],
+        [0.5, 1/(1+np.exp(-1)), 1.0]
+    ])
+
+    try:
+        result = target(x)
+
+        # Type and shape
+        assert isinstance(result, np.ndarray), "Output must be a numpy array."
+        assert result.shape == x.shape, "Output shape does not match input."
+
+        # Value range check
+        assert np.all(result >= 0) and np.all(result <= 1), "Values must be in range [0, 1]."
+
+        # Close to expected
+        assert np.allclose(result, expected, atol=1e-6), f"Output mismatch.\nExpected:\n{expected}\nGot:\n{result}"
+
+        print("\033[92m✅ test_sigmoid: All tests passed.\n")
+
+    except AssertionError as e:
+        print("\033[91m❌ test_sigmoid: Test failed.")
+        print("→ Reason:", e)
+        print("→ Input:", x)
+
+
+def test_Dense(target):
+    print("Running test_Dense...\n")
+
+    import numpy as np
+
+    # Sample input
+    x = np.array([[2.0, 7.0, 25.0]])
+    input_shape = x.shape
+    n_units = 4
+
+    # Define simple activation for predictability
+    def identity(x): return x
+
+    # Create Dense layer with identity to check pure dot product
+    dense = target(n_units=n_units, input_shape=input_shape, activation=identity, random_seed=0)
+
+    try:
+        # Check weight shape
+        assert dense.weights.shape == (input_shape[-1], n_units), "Weight shape mismatch."
+
+        # Check output shape
+        output = dense(x)
+        assert output.shape == (1, n_units), "Output shape mismatch."
+
+        # Re-compute manually to confirm logic
+        expected = np.dot(x, dense.weights)
+        assert np.allclose(output, expected), "Output mismatch with expected dot product."
+
+        print("\033[92m✅ test_Dense: All tests passed.\n")
+
+    except AssertionError as e:
+        print("\033[91m❌ test_Dense: Test failed.")
+        print("→ Reason:", e)
+        print("→ Weights shape:", dense.weights.shape)
+        print("→ Input shape:", x.shape)
+
+
+def test_model(target):
+    print("Running test_model...\n")
+
+    import tensorflow as tf
+
+    num_words = 1000
+    embedding_dim = 16
+    max_len = 20
+
+    try:
+        model = target(num_words, embedding_dim, max_len)
+
+        # Check type
+        assert isinstance(model, tf.keras.Model), "Returned object is not a tf.keras.Model."
+
+        # Check layer count
+        assert len(model.layers) == 3, f"Expected 3 layers, got {len(model.layers)}."
+
+        # Check layer types
+        assert isinstance(model.layers[0], tf.keras.layers.Embedding), "First layer is not Embedding."
+        assert isinstance(model.layers[1], tf.keras.layers.GlobalAveragePooling1D), "Second layer is not GlobalAveragePooling1D."
+        assert isinstance(model.layers[2], tf.keras.layers.Dense), "Third layer is not Dense."
+
+        # Check output layer config
+        output_layer = model.layers[2]
+        assert output_layer.units == 1, "Output Dense layer must have 1 unit."
+        assert output_layer.activation.__name__ == 'sigmoid', "Output activation must be 'sigmoid'."
+
+        # Check compile config
+        assert model.loss == 'binary_crossentropy', "Loss must be binary_crossentropy."
+        assert isinstance(model.optimizer, tf.keras.optimizers.Adam), "Optimizer must be Adam."
+
+        print("\033[92m✅ test_model: All tests passed.\n")
+
+    except AssertionError as e:
+        print("\033[91m❌ test_model: Test failed.")
+        print("→ Reason:", e)
+
